@@ -136,7 +136,7 @@ jobs:
           echo "docker-demo-1-dev" > resource-release/dev-name
           echo "tag: v$(cat resource-version/number)" >> resource-release/dev-values.yaml
           echo "docker-demo-1-test" > resource-release/test-name
-          echo "image:\n  tag: v$(cat resource-version/number)" >> resource-release/test-values.yaml
+          echo "tag: v$(cat resource-version/number)" >> resource-release/test-values.yaml
   - put: dev-helm
     attempts: 8
     timeout: 90s
