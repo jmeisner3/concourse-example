@@ -2,6 +2,8 @@
 
 Credentials Example:
 
+`credentials.yml`
+
 ```yaml
 docker-hub-email:
 docker-hub-username: 
