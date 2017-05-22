@@ -15,8 +15,8 @@ github-private-key: |
   ...
   -----END RSA PRIVATE KEY-----
 
-dev_admin_cert: <base64 encoded>
-dev_admin_key: <base64 encoded>
-dev_cluster_ca: <base64 encoded>
+dev_admin_cert: #<base64 encoded>
+dev_admin_key: #<base64 encoded>
+dev_cluster_ca: #<base64 encoded>
 dev_cluster_url: 
 ```
