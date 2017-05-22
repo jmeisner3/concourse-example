@@ -1,0 +1,312 @@
+---
+resource_types:
+- name: helm
+  type: docker-image
+  source:
+    repository: jmeisner/concourse-helm-resource
+    tag: v0.0.1
+
+
+resources:
+
+- name: github-docker-demo-1
+  type: git
+  source:
+    uri: {{github-repo}}
+
+- name: docker-demo-1-docker-image-dev
+  type: docker-image
+  source:
+    email: {{docker-hub-email}}
+    username: {{docker-hub-username}}
+    password: {{docker-hub-password}}
+    repository: {{docker-hub-image-docker-demo-1}}
+    tag: dev-latest
+
+- name: docker-demo-1-docker-image-latest
+  type: docker-image
+  source:
+    email: {{docker-hub-email}}
+    username: {{docker-hub-username}}
+    password: {{docker-hub-password}}
+    repository: {{docker-hub-image-docker-demo-1}}
+    tag: latest
+
+- name: resource-version
+  type: semver
+  source:
+    driver: git
+    initial_version: 0.0.1
+    uri: {{github-repo-ssh}}
+    branch: version
+    file: version
+    private_key: {{github-private-key}}
+    username: {{github-username}}
+
+- name: dev-helm
+  type: helm
+  source:
+    cluster_url: {{dev_cluster_url}}
+    cluster_ca: {{dev_cluster_ca}}
+    admin_key: {{dev_admin_key}}
+    admin_cert: {{dev_admin_cert}}
+
+- name: test-helm
+  type: helm
+  source:
+    cluster_url: {{dev_cluster_url}}
+    cluster_ca: {{dev_cluster_ca}}
+    admin_key: {{dev_admin_key}}
+    admin_cert: {{dev_admin_cert}}
+    namespace: test
+
+
+- name: cert-helm
+  type: helm
+  source:
+    cluster_url: {{dev_cluster_url}}
+    cluster_ca: {{dev_cluster_ca}}
+    admin_key: {{dev_admin_key}}
+    admin_cert: {{dev_admin_cert}}
+    namespace: cert
+
+jobs:
+- name: job-release-candidate
+  public: true
+  serial: true
+  plan:
+  - get: github-docker-demo-1
+    trigger: true
+  - put: resource-version
+    params: {pre: rc}
+
+- name: job-publish-candidate
+  public: true
+  serial: true
+  plan:
+  - get: github-docker-demo-1
+    passed: [job-release-candidate]
+    trigger: true
+  - get: resource-version
+    passed: [job-release-candidate]
+  - put: docker-demo-1-docker-image-dev
+    attempts: 8
+    params:
+      build: github-docker-demo-1
+      tag: resource-version/number
+      tag_prefix: v
+    get_params:
+      save: true
+  - put: docker-demo-1-docker-image-dev
+    attempts: 8
+    params:
+      load: docker-demo-1-docker-image-dev
+    get_params:
+      skip_download: true
+
+- name: job-deploy-dev
+  public: true
+  serial: true
+  plan:
+  - get: github-docker-demo-1
+  - get: resource-version
+    passed: [job-publish-candidate]
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-publish-candidate]
+    trigger: true
+    params:
+      skip_download: true
+  - task: dev-deploy-params
+    attempts: 8
+    timeout: 30s
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: {repository: busybox}
+      inputs:
+      - name: resource-version
+      outputs:
+      - name: resource-release
+      run:
+        path: sh
+        args: 
+        - -exc
+        - |
+          echo "docker-demo-1-dev" > resource-release/dev-name
+          echo "tag: v$(cat resource-version/number)" >> resource-release/dev-values.yaml
+          echo "docker-demo-1-test" > resource-release/test-name
+          echo "image:\n  tag: v$(cat resource-version/number)" >> resource-release/test-values.yaml
+  - put: dev-helm
+    attempts: 8
+    timeout: 90s
+    params:
+      chart: github-docker-demo-1/charts/docker-demo-1-0.0.1.tgz
+      values: 
+      - github-docker-demo-1/charts/docker-demo-1/assets/dev-manifest.yaml
+      - resource-release/dev-values.yaml
+      release: resource-release/dev-name
+  - put: test-helm
+    attempts: 8
+    timeout: 90s
+    params:
+      chart: github-docker-demo-1/charts/docker-demo-1-0.0.1.tgz
+      values: 
+      - github-docker-demo-1/charts/docker-demo-1/assets/test-manifest.yaml
+      - resource-release/test-values.yaml
+      release: resource-release/test-name
+
+
+- name: job-integration-test
+  public: true
+  serial: true
+  plan:
+  - get: resource-version
+    passed: [job-deploy-dev]
+  - task: run-integration-tests
+    attempts: 8
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: {repository: busybox}
+      run:
+        path: sh
+        args: 
+        - -exc
+        - |
+          echo "Run integration tests."
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-deploy-dev]
+    trigger: true
+    params:
+      skip_download: true
+  - get: test-helm
+    passed: [job-deploy-dev]
+    trigger: true
+
+
+- name: job-deploy-cert
+  public: true
+  serial: true
+  plan:
+  - get: github-docker-demo-1
+  - get: resource-version
+    passed: [job-integration-test]
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-integration-test]
+    trigger: true
+    params:
+      skip_download: true
+  - task: cert-deploy-params
+    attempts: 8
+    timeout: 15s
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: {repository: busybox}
+      inputs:
+      - name: resource-version
+      outputs:
+      - name: resource-release
+      run:
+        path: sh
+        args: 
+        - -exc
+        - |
+          echo "docker-demo-1-cert" > resource-release/cert-name
+          echo "tag: v$(cat resource-version/number)" >> resource-release/cert-values.yaml
+  - put: cert-helm
+    attempts: 8
+    timeout: 90s
+    params:
+      chart: github-docker-demo-1/charts/docker-demo-1-0.0.1.tgz
+      values: 
+      - github-docker-demo-1/charts/docker-demo-1/assets/cert-manifest.yaml
+      - resource-release/cert-values.yaml
+      release: resource-release/cert-name
+
+
+- name: job-performance-test
+  public: true
+  serial: true
+  plan:
+  - get: resource-version
+    passed: [job-deploy-cert]
+  - task: run-performance-tests
+    attempts: 8
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: {repository: busybox}
+      run:
+        path: sh
+        args: 
+        - -exc
+        - |
+          echo "Run Performance tests."
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-deploy-cert]
+    trigger: true
+    params:
+      skip_download: true
+  - get: cert-helm
+    passed: [job-deploy-cert]
+    trigger: true
+
+
+- name: job-release-patch
+  public: true
+  serial: true
+  plan:
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-performance-test]
+    params:
+      skip_download: true
+  - put: resource-version
+    params: {bump: final}
+  - task: release-minor
+    config:
+      platform: linux
+      image_resource:
+        type: docker-image
+        source: {repository: busybox}
+      run:
+        path: sh
+        args: 
+        - -exc
+        - |
+          echo "Release minor."
+
+
+- name: job-publish-patch
+  public: true
+  serial: true
+  plan:
+  - get: resource-version
+    passed: [job-release-patch]
+    trigger: true
+  - get: docker-demo-1-docker-image-dev
+    passed: [job-release-patch]
+    trigger: true
+    params:
+      save: true
+  - put: docker-demo-1-docker-image-latest
+    attempts: 8
+    params:
+      tag: resource-version/number
+      tag_prefix: v
+      load: docker-demo-1-docker-image-dev
+    get_params:
+      skip_download: true
+  - put: docker-demo-1-docker-image-latest
+    attempts: 8
+    params:
+      load: docker-demo-1-docker-image-dev
+    get_params:
+      skip_download: true
+  #Our Next Release Candidates will be targeting this patch.
+  - put: resource-version
+    params: {bump: patch}
